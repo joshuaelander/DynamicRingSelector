@@ -16,6 +16,6 @@
   "manifest": "https://raw.githubusercontent.com/joshuaelander/DynamicRingSelector/main/module.json",
   "download": "https://github.com/joshuaelander/DynamicRingSelector/archive/refs/heads/main.zip",
   "esmodules": [
-    "scripts/main.js"
+    "main.js"
   ]
 }
