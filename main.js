@@ -1,6 +1,6 @@
 /**
  * Dynamic Ring Selector
- * A lightweight Foundry VTT v14 module to swap dynamic token ring spritesheets.
+ * A lightweight Foundry VTT v14 module to natively register and swap dynamic token rings.
  */
 
 // Helper to update the cached list of available rings
@@ -13,19 +13,26 @@ async function updateCachedRings() {
         label: "Default Steel Ring"
     });
 
+    const imageExtensions = [".png", ".webp", ".jpg", ".jpeg"];
+
     // 2. Scan configured directory (GMs only)
     const dirPath = game.settings.get("dynamicringselector", "ringDirectory");
     if (dirPath && game.user.isGM) {
         try {
             const browseResult = await FilePicker.browse("data", dirPath);
             for (const file of browseResult.files) {
-                if (file.endsWith(".json")) {
+                const lowerFile = file.toLowerCase();
+                const isImage = imageExtensions.some(ext => lowerFile.endsWith(ext));
+                const isJson = lowerFile.endsWith(".json");
+                if (isJson || isImage) {
                     const filename = file.split("/").pop();
-                    const label = filename
-                        .replace(".json", "")
+                    const ext = filename.includes(".") ? filename.substring(filename.lastIndexOf(".")) : "";
+                    const baseLabel = filename
+                        .replace(ext, "")
                         .replace(/[-_]/g, " ")
                         .replace(/\b\w/g, c => c.toUpperCase());
-                    rings.set(file, { path: file, label: label });
+                    const label = isImage ? `${baseLabel} (Image)` : baseLabel;
+                    rings.set(file, { path: file, label: label, isImage: isImage });
                 }
             }
         } catch (e) {
@@ -52,35 +59,48 @@ async function updateCachedRings() {
     const additional = game.settings.get("dynamicringselector", "additionalPaths") || "";
     const paths = additional.split(/[\n,]+/).map(p => p.trim()).filter(p => p.length > 0);
     for (const path of paths) {
+        const lowerPath = path.toLowerCase();
+        const isImage = imageExtensions.some(ext => lowerPath.endsWith(ext));
         const filename = path.split("/").pop();
-        const label = filename
-            .replace(".json", "")
+        const ext = filename.includes(".") ? filename.substring(filename.lastIndexOf(".")) : "";
+        const baseLabel = filename
+            .replace(ext, "")
             .replace(/[-_]/g, " ")
             .replace(/\b\w/g, c => c.toUpperCase());
-        rings.set(path, { path: path, label: label });
+        const label = isImage ? `${baseLabel} (Image)` : baseLabel;
+        rings.set(path, { path: path, label: label, isImage: isImage });
     }
 
     const ringList = Array.from(rings.values());
-    await game.settings.set("dynamicringselector", "cachedRings", ringList);
-    console.log("DynamicRingSelector | Updated cached ring list:", ringList);
-    return ringList;
+    const oldRingList = game.settings.get("dynamicringselector", "cachedRings") || [];
+    
+    // Check if the list actually changed
+    const oldPaths = oldRingList.map(r => `${r.path}:${!!r.isImage}`).join(",");
+    const newPaths = ringList.map(r => `${r.path}:${!!r.isImage}`).join(",");
+    const changed = oldPaths !== newPaths;
+
+    if (changed) {
+        await game.settings.set("dynamicringselector", "cachedRings", ringList);
+        console.log("DynamicRingSelector | Updated cached ring list:", ringList);
+    }
+    return changed;
 }
 
-// Helper to swap active ring spritesheet globally
-function applyRingSpritesheet(ringPath) {
-    const targetPath = ringPath || "canvas/tokens/rings-steel.json";
-
-    // Swap the global spritesheet configuration path
-    CONFIG.Token.ring.spritesheet = targetPath;
-
-    // Swap active configuration properties to ensure compatibility
-    const activeId = CONFIG.Token.ring.activeConfig || "coreSteel";
-    const activeConfig = CONFIG.Token.ring.getConfig(activeId);
-    if (activeConfig) {
-        activeConfig.spritesheet = targetPath;
+// Helper to swap active ring configuration natively
+function applyRingId(ringId) {
+    if (!ringId) {
+        // Revert to core steel default ring if none selected
+        CONFIG.Token.ring.useConfig("coreSteel");
+        console.log(`DynamicRingSelector | Reverted active dynamic token ring configuration to default (coreSteel).`);
+        return;
     }
 
-    console.log(`DynamicRingSelector | Applied dynamic ring spritesheet: ${targetPath}`);
+    if (CONFIG.Token.ring.configIDs.includes(ringId)) {
+        CONFIG.Token.ring.useConfig(ringId);
+        console.log(`DynamicRingSelector | Applied active dynamic token ring configuration: ${ringId}`);
+    } else {
+        console.warn(`DynamicRingSelector | Dynamic ring configuration ID "${ringId}" not found in registered configs.`);
+    }
 }
 
 // Redraw all dynamic token rings on the canvas to reflect changes
@@ -97,6 +117,78 @@ function redrawTokenRings() {
     }
 }
 
+// Native Dynamic Ring Registration Hook
+Hooks.on("initializeDynamicTokenRingConfig", (ringConfig) => {
+    const cachedRings = game.settings.get("dynamicringselector", "cachedRings") || [];
+    const DynamicRingData = foundry.canvas.tokens?.DynamicRingData || foundry.canvas.placeables?.tokens?.DynamicRingData;
+    if (!DynamicRingData) return;
+
+    for (const ring of cachedRings) {
+        // Skip default steel ring (handled natively by Core)
+        if (ring.path === "canvas/tokens/rings-steel.json" || ring.path === "/public/canvas/tokens/rings-steel.json") continue;
+
+        // Use a safe, unique ID for the custom configuration
+        const id = ring.path.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+        
+        // Prevent duplicate registration
+        if (ringConfig.configIDs.includes(id)) continue;
+
+        let spritesheetPath = ring.path;
+        if (ring.isImage) {
+            let imagePath = ring.path;
+            if (!imagePath.startsWith("/") && !imagePath.startsWith("http")) {
+                imagePath = "/" + imagePath;
+            }
+            const spritesheetJson = {
+                frames: {
+                    background: {
+                        frame: { x: 0, y: 0, w: 512, h: 512 },
+                        rotated: false,
+                        trimmed: false,
+                        spriteSourceSize: { x: 0, y: 0, w: 512, h: 512 },
+                        sourceSize: { w: 512, h: 512 }
+                    },
+                    ring: {
+                        frame: { x: 0, y: 0, w: 512, h: 512 },
+                        rotated: false,
+                        trimmed: false,
+                        spriteSourceSize: { x: 0, y: 0, w: 512, h: 512 },
+                        sourceSize: { w: 512, h: 512 }
+                    }
+                },
+                meta: {
+                    image: imagePath,
+                    format: "RGBA8888",
+                    size: { w: 512, h: 512 },
+                    scale: "1"
+                },
+                config: {
+                    defaultColorBand: {
+                        startRadius: 0.8,
+                        endRadius: 1.0
+                    }
+                }
+            };
+            const jsonStr = JSON.stringify(spritesheetJson);
+            const base64Str = btoa(unescape(encodeURIComponent(jsonStr)));
+            spritesheetPath = `data:application/json;base64,${base64Str}`;
+        }
+
+        const customRing = new DynamicRingData({
+            id: id,
+            label: ring.label,
+            effects: {
+                RING_PULSE: "TOKEN.RING.EFFECTS.RING_PULSE",
+                RING_GRADIENT: "TOKEN.RING.EFFECTS.RING_GRADIENT",
+                BACKGROUND_WAVE: "TOKEN.RING.EFFECTS.BACKGROUND_WAVE"
+            },
+            spritesheet: spritesheetPath
+        });
+        ringConfig.addConfig(id, customRing);
+        console.log(`DynamicRingSelector | Registered native ring configuration: ${id} (${ring.path})`);
+    }
+});
+
 // Init Hook
 Hooks.once("init", () => {
     // Register settings
@@ -107,6 +199,8 @@ Hooks.once("init", () => {
         config: true,
         type: String,
         default: "canvas/tokens",
+        filePicker: "folder",
+        requiresReload: true,
         onChange: () => { if (game.user.isGM) updateCachedRings(); }
     });
 
@@ -117,6 +211,7 @@ Hooks.once("init", () => {
         config: true,
         type: String,
         default: "",
+        requiresReload: true,
         onChange: () => { if (game.user.isGM) updateCachedRings(); }
     });
 
@@ -132,7 +227,7 @@ Hooks.once("init", () => {
     // Expose API for external/macro usage
     const api = {
         updateCachedRings,
-        applyRingSpritesheet,
+        applyRingId,
         redrawTokenRings
     };
     globalThis.DynamicRingSelector = api;
@@ -151,21 +246,26 @@ Hooks.once("ready", () => {
     }
 });
 
-// Canvas Ready Hook - Apply ring path if a token in the scene has one set
+// Canvas Ready Hook - Apply ring ID if a token in the scene has one set
 Hooks.on("canvasReady", () => {
-    const tokenWithRing = canvas.tokens.placeables.find(t => t.document.getFlag("dynamicringselector", "ringPath"));
+    const tokenWithRing = canvas.tokens.placeables.find(t => {
+        const doc = t.document;
+        return doc.getFlag("dynamicringselector", "ringId") || doc.getFlag("dynamicringselector", "ringPath");
+    });
     if (tokenWithRing) {
-        const ringPath = tokenWithRing.document.getFlag("dynamicringselector", "ringPath");
-        applyRingSpritesheet(ringPath);
+        const ringId = tokenWithRing.document.getFlag("dynamicringselector", "ringId") || 
+                       tokenWithRing.document.getFlag("dynamicringselector", "ringPath")?.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+        applyRingId(ringId);
         redrawTokenRings();
     }
 });
 
 // Token Update Hook - Update active ring when a token's flag changes
 Hooks.on("updateToken", (document, change, options, userId) => {
-    if (change.flags?.dynamicringselector?.ringPath !== undefined) {
-        const ringPath = document.getFlag("dynamicringselector", "ringPath");
-        applyRingSpritesheet(ringPath);
+    const ringId = change.flags?.dynamicringselector?.ringId || 
+                   change.flags?.dynamicringselector?.ringPath?.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+    if (ringId !== undefined) {
+        applyRingId(ringId);
         redrawTokenRings();
     }
 });
@@ -173,9 +273,10 @@ Hooks.on("updateToken", (document, change, options, userId) => {
 // Control Token Hook - Swap active style when selecting a token with a custom style
 Hooks.on("controlToken", (token, controlled) => {
     if (controlled) {
-        const ringPath = token.document.getFlag("dynamicringselector", "ringPath");
-        if (ringPath) {
-            applyRingSpritesheet(ringPath);
+        const ringId = token.document.getFlag("dynamicringselector", "ringId") || 
+                       token.document.getFlag("dynamicringselector", "ringPath")?.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+        if (ringId) {
+            applyRingId(ringId);
             redrawTokenRings();
         }
     }
@@ -191,18 +292,26 @@ Hooks.on("renderTokenConfig", (app, html, data) => {
     const appearanceTab = htmlElement.querySelector('.tab[data-tab="appearance"]');
     if (!appearanceTab) return;
 
-    // Get the cached list of rings
-    const cachedRings = game.settings.get("dynamicringselector", "cachedRings") || [];
-
-    // Get current token document and active ring path flag
+    // Get current token document and active ring ID flag
     const tokenDoc = app.token || app.document;
-    const currentPath = tokenDoc.getFlag("dynamicringselector", "ringPath") || "";
+    let currentRingId = tokenDoc.getFlag("dynamicringselector", "ringId") || "";
 
-    // Build the dropdown options
+    // Backward compatibility: Migrate / resolve legacy path flags to config ID
+    if (!currentRingId) {
+        const legacyPath = tokenDoc.getFlag("dynamicringselector", "ringPath") || "";
+        if (legacyPath) {
+            currentRingId = legacyPath.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+        }
+    }
+
+    // Build the dropdown options using natively registered CONFIG configs
+    const configIDs = CONFIG.Token.ring.configIDs;
     let optionsHtml = `<option value="">-- Use Default / Unchanged --</option>`;
-    for (const ring of cachedRings) {
-        const selected = ring.path === currentPath ? "selected" : "";
-        optionsHtml += `<option value="${ring.path}" ${selected}>${ring.label}</option>`;
+    for (const id of configIDs) {
+        const config = CONFIG.Token.ring.getConfig(id);
+        if (!config) continue;
+        const selected = id === currentRingId ? "selected" : "";
+        optionsHtml += `<option value="${id}" ${selected}>${config.label} (${id})</option>`;
     }
 
     // Build form group HTML aligned with Foundry VTT styling
@@ -210,7 +319,7 @@ Hooks.on("renderTokenConfig", (app, html, data) => {
         <div class="form-group">
             <label>Dynamic Ring Style</label>
             <div class="form-fields">
-                <select name="flags.dynamicringselector.ringPath">
+                <select name="flags.dynamicringselector.ringId">
                     ${optionsHtml}
                 </select>
             </div>

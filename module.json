@@ -1,11 +1,11 @@
 {
   "id": "dynamicringselector",
   "title": "Dynamic Ring Selector",
-  "description": "Allows GMs and players to select different Dynamic Token Ring styles from a dropdown menu inside the Token Configuration window.",
-  "version": "1.0.0",
+  "description": "Natively registers and swaps Dynamic Token Ring styles from a dropdown inside the Token Configuration sheet or core settings.",
+  "version": "1.2.0",
   "authors": [
     {
-      "name": "Foundry VTT Expert Developer"
+      "name": "Aeneas"
     }
   ],
   "compatibility": {
