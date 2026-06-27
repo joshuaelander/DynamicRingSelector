@@ -2,7 +2,7 @@
   "id": "dynamicringselector",
   "title": "Dynamic Ring Selector",
   "description": "Natively registers and swaps Dynamic Token Ring styles from a dropdown inside the Token Configuration sheet or core settings.",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "authors": [
     {
       "name": "Aeneas"
