@@ -5,10 +5,126 @@
 
 // Module-level store for virtual spritesheets (keyed by clean dynamicringselector:// URL)
 const virtualSpritesheetStore = new Map();
+const customRingConfigStore = new Map();
+const CUSTOM_RING_CONFIG_ID = "dynamicringselector-custom";
+
+function normalizeAssetPath(filePath) {
+    if (!filePath) return null;
+    if (filePath.startsWith("/") || filePath.startsWith("http")) return filePath;
+    return `/${filePath}`;
+}
+
+function refreshCustomRingConfig() {
+    const ringPath = (game.settings.get("dynamicringselector", "customRingImage") || "").trim();
+    const backgroundPath = (game.settings.get("dynamicringselector", "customRingBackgroundImage") || "").trim();
+
+    if (!ringPath || !backgroundPath) {
+        customRingConfigStore.delete(CUSTOM_RING_CONFIG_ID);
+        return null;
+    }
+
+    const customConfig = {
+        id: CUSTOM_RING_CONFIG_ID,
+        label: "Custom Ring",
+        ringImagePath: ringPath,
+        backgroundImagePath: backgroundPath
+    };
+    customRingConfigStore.set(CUSTOM_RING_CONFIG_ID, customConfig);
+    return customConfig;
+}
+
+async function buildCompositeCustomSpritesheet(customConfig) {
+    const ringPath = normalizeAssetPath(customConfig.ringImagePath);
+    const backgroundPath = normalizeAssetPath(customConfig.backgroundImagePath);
+
+    if (!ringPath || !backgroundPath) {
+        throw new Error("Both a ring image and a background image are required for a custom ring.");
+    }
+
+    const [ringTexture, backgroundTexture] = await Promise.all([
+        PIXI.Assets.load(ringPath),
+        PIXI.Assets.load(backgroundPath)
+    ]);
+
+    const backgroundWidth = backgroundTexture.width || 512;
+    const backgroundHeight = backgroundTexture.height || 512;
+    const ringWidth = ringTexture.width || 512;
+    const ringHeight = ringTexture.height || 512;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = backgroundWidth + ringWidth;
+    canvas.height = Math.max(backgroundHeight, ringHeight);
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+        throw new Error("Unable to create a canvas context for the custom ring spritesheet.");
+    }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(backgroundTexture.baseTexture.resource?.source, 0, 0, backgroundWidth, backgroundHeight);
+    ctx.drawImage(ringTexture.baseTexture.resource?.source, backgroundWidth, 0, ringWidth, ringHeight);
+
+    const compositeTexture = PIXI.Texture.from(canvas);
+    const spritesheetJson = {
+        frames: {
+            background: {
+                frame: { x: 0, y: 0, w: backgroundWidth, h: backgroundHeight },
+                rotated: false,
+                trimmed: false,
+                spriteSourceSize: { x: 0, y: 0, w: backgroundWidth, h: backgroundHeight },
+                sourceSize: { w: backgroundWidth, h: backgroundHeight }
+            },
+            ring: {
+                frame: { x: backgroundWidth, y: 0, w: ringWidth, h: ringHeight },
+                rotated: false,
+                trimmed: false,
+                spriteSourceSize: { x: 0, y: 0, w: ringWidth, h: ringHeight },
+                sourceSize: { w: ringWidth, h: ringHeight }
+            }
+        },
+        meta: {
+            image: customConfig.id,
+            format: "RGBA8888",
+            size: { w: canvas.width, h: canvas.height },
+            scale: "1"
+        },
+        config: {
+            defaultColorBand: {
+                startRadius: 0.8,
+                endRadius: 1.0
+            }
+        }
+    };
+
+    const spritesheet = new PIXI.Spritesheet(compositeTexture, spritesheetJson);
+    await spritesheet.parse();
+    return spritesheet;
+}
+
+// Helper to resolve an image ring's file path from the cached settings by config ID
+function resolveImagePathForId(id) {
+    try {
+        const cachedRings = game.settings.get("dynamicringselector", "cachedRings") || [];
+        const ring = cachedRings.find(r => {
+            if (!r.isImage) return false;
+            return r.path.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase() === id;
+        });
+        if (!ring) return null;
+        let imagePath = ring.path;
+        if (!imagePath.startsWith("/") && !imagePath.startsWith("http")) {
+            imagePath = "/" + imagePath;
+        }
+        return imagePath;
+    } catch (e) {
+        return null;
+    }
+}
 
 // Register a custom PixiJS LoaderParser to intercept dynamicringselector:// URLs.
 // This MUST run at module evaluation time (before any loading happens)
 // so it is registered before the canvas tries to load any spritesheet.
+// The parser is fully self-contained: it builds the spritesheet on-demand
+// when PixiJS first requests it, avoiding any hook-timing dependencies.
 {
     const drsLoaderParser = {
         extension: {
@@ -22,11 +138,82 @@ const virtualSpritesheetStore = new Map();
         async load(url) {
             // Strip query params and hashes that PixiJS/Foundry may append
             const cleanUrl = url.split("?")[0].split("#")[0];
+
+            // Return from cache if already built
             if (virtualSpritesheetStore.has(cleanUrl)) {
                 return virtualSpritesheetStore.get(cleanUrl);
             }
-            console.warn(`DynamicRingSelector | Virtual spritesheet not found in store for: ${cleanUrl}`);
-            return null;
+
+            // Extract the config ID from the URL (dynamicringselector://<id>.json)
+            const id = cleanUrl.replace("dynamicringselector://", "").replace(".json", "");
+            const customConfig = customRingConfigStore.get(id);
+            if (customConfig) {
+                try {
+                    const spritesheet = await buildCompositeCustomSpritesheet(customConfig);
+                    virtualSpritesheetStore.set(cleanUrl, spritesheet);
+                    console.log(`DynamicRingSelector | Built and cached virtual spritesheet: ${cleanUrl} from paired ring/background assets`);
+                    return spritesheet;
+                } catch (e) {
+                    console.error("DynamicRingSelector | Failed to build virtual spritesheet for custom ring config", e);
+                    return null;
+                }
+            }
+
+            const imagePath = resolveImagePathForId(id);
+            if (!imagePath) {
+                console.warn(`DynamicRingSelector | Could not resolve image path for config ID: ${id}`);
+                return null;
+            }
+
+            try {
+                // Load the image texture via standard PixiJS asset loading
+                const texture = await PIXI.Assets.load(imagePath);
+                const w = texture.width || 512;
+                const h = texture.height || 512;
+
+                // Build the spritesheet config matching the texture dimensions
+                const spritesheetJson = {
+                    frames: {
+                        ring: {
+                            frame: { x: 0, y: 0, w, h },
+                            rotated: false,
+                            trimmed: false,
+                            spriteSourceSize: { x: 0, y: 0, w, h },
+                            sourceSize: { w, h }
+                        },
+                        background: {
+                            frame: { x: 0, y: 0, w, h },
+                            rotated: false,
+                            trimmed: false,
+                            spriteSourceSize: { x: 0, y: 0, w, h },
+                            sourceSize: { w, h }
+                        }
+                    },
+                    meta: {
+                        image: imagePath,
+                        format: "RGBA8888",
+                        size: { w, h },
+                        scale: "1"
+                    },
+                    config: {
+                        defaultColorBand: {
+                            startRadius: 0.8,
+                            endRadius: 1.0
+                        }
+                    }
+                };
+
+                const spritesheet = new PIXI.Spritesheet(texture, spritesheetJson);
+                await spritesheet.parse();
+
+                // Cache for future lookups
+                virtualSpritesheetStore.set(cleanUrl, spritesheet);
+                console.log(`DynamicRingSelector | Built and cached virtual spritesheet: ${cleanUrl} from ${imagePath}`);
+                return spritesheet;
+            } catch (e) {
+                console.error(`DynamicRingSelector | Failed to build virtual spritesheet for: ${imagePath}`, e);
+                return null;
+            }
         }
     };
     PIXI.extensions.add(drsLoaderParser);
@@ -67,6 +254,16 @@ async function updateCachedRings() {
         } catch (e) {
             console.warn("DynamicRingSelector | Failed to browse directory: " + dirPath, e);
         }
+    }
+
+    const customConfig = refreshCustomRingConfig();
+    if (customConfig) {
+        rings.set(customConfig.id, {
+            path: customConfig.id,
+            label: customConfig.label,
+            isImage: true,
+            isCustom: true
+        });
     }
 
     // 3. Scan common paths for Tokenizer and other popular modules
@@ -213,11 +410,26 @@ async function loadVirtualSpritesheets() {
     }
 }
 
-// Native Dynamic Ring Registration Hook
-Hooks.on("initializeDynamicTokenRingConfig", (ringConfig) => {
+function registerDynamicRingConfigs(ringConfig) {
     const cachedRings = game.settings.get("dynamicringselector", "cachedRings") || [];
     const DynamicRingData = foundry.canvas.tokens?.DynamicRingData || foundry.canvas.placeables?.tokens?.DynamicRingData;
     if (!DynamicRingData) return;
+
+    const customConfig = refreshCustomRingConfig();
+    if (customConfig && !ringConfig.configIDs.includes(CUSTOM_RING_CONFIG_ID)) {
+        const customRing = new DynamicRingData({
+            id: CUSTOM_RING_CONFIG_ID,
+            label: customConfig.label,
+            effects: {
+                RING_PULSE: "TOKEN.RING.EFFECTS.RING_PULSE",
+                RING_GRADIENT: "TOKEN.RING.EFFECTS.RING_GRADIENT",
+                BACKGROUND_WAVE: "TOKEN.RING.EFFECTS.BACKGROUND_WAVE"
+            },
+            spritesheet: `dynamicringselector://${CUSTOM_RING_CONFIG_ID}.json`
+        });
+        ringConfig.addConfig(CUSTOM_RING_CONFIG_ID, customRing);
+        console.log(`DynamicRingSelector | Registered custom ring configuration: ${CUSTOM_RING_CONFIG_ID}`);
+    }
 
     for (const ring of cachedRings) {
         // Skip default steel ring (handled natively by Core)
@@ -247,6 +459,11 @@ Hooks.on("initializeDynamicTokenRingConfig", (ringConfig) => {
         ringConfig.addConfig(id, customRing);
         console.log(`DynamicRingSelector | Registered native ring configuration: ${id} (${spritesheetPath})`);
     }
+}
+
+// Native Dynamic Ring Registration Hook
+Hooks.on("initializeDynamicTokenRingConfig", (ringConfig) => {
+    registerDynamicRingConfigs(ringConfig);
 });
 
 // Init Hook
@@ -275,6 +492,34 @@ Hooks.once("init", () => {
         onChange: () => { if (game.user.isGM) updateCachedRings(); }
     });
 
+    game.settings.register("dynamicringselector", "customRingImage", {
+        name: "Custom Ring Image",
+        hint: "Select the ring image to pair with the background image below for a custom dynamic token ring.",
+        scope: "world",
+        config: true,
+        type: String,
+        default: "",
+        filePicker: "image",
+        onChange: () => {
+            refreshCustomRingConfig();
+            updateCachedRings().catch(err => console.error("DynamicRingSelector | Error refreshing custom ring config:", err));
+        }
+    });
+
+    game.settings.register("dynamicringselector", "customRingBackgroundImage", {
+        name: "Custom Ring Background Image",
+        hint: "Select the background image to pair with the ring image above for a custom dynamic token ring.",
+        scope: "world",
+        config: true,
+        type: String,
+        default: "",
+        filePicker: "image",
+        onChange: () => {
+            refreshCustomRingConfig();
+            updateCachedRings().catch(err => console.error("DynamicRingSelector | Error refreshing custom ring config:", err));
+        }
+    });
+
     game.settings.register("dynamicringselector", "cachedRings", {
         scope: "world",
         config: false,
@@ -299,6 +544,8 @@ Hooks.once("init", () => {
 
 // Ready Hook
 Hooks.once("ready", async () => {
+    refreshCustomRingConfig();
+
     // Players and GMs need to load and cache virtual spritesheets for dynamic token rings
     await loadVirtualSpritesheets();
 
