@@ -3,6 +3,35 @@
  * A lightweight Foundry VTT v14 module to natively register and swap dynamic token rings.
  */
 
+// Module-level store for virtual spritesheets (keyed by clean dynamicringselector:// URL)
+const virtualSpritesheetStore = new Map();
+
+// Register a custom PixiJS LoaderParser to intercept dynamicringselector:// URLs.
+// This MUST run at module evaluation time (before any loading happens)
+// so it is registered before the canvas tries to load any spritesheet.
+{
+    const drsLoaderParser = {
+        extension: {
+            type: PIXI.ExtensionType.LoadParser,
+            name: "drs-virtual-spritesheet",
+            priority: 100
+        },
+        test(url) {
+            return typeof url === "string" && url.startsWith("dynamicringselector://");
+        },
+        async load(url) {
+            // Strip query params and hashes that PixiJS/Foundry may append
+            const cleanUrl = url.split("?")[0].split("#")[0];
+            if (virtualSpritesheetStore.has(cleanUrl)) {
+                return virtualSpritesheetStore.get(cleanUrl);
+            }
+            console.warn(`DynamicRingSelector | Virtual spritesheet not found in store for: ${cleanUrl}`);
+            return null;
+        }
+    };
+    PIXI.extensions.add(drsLoaderParser);
+}
+
 // Helper to update the cached list of available rings
 async function updateCachedRings() {
     const rings = new Map();
@@ -117,11 +146,9 @@ function redrawTokenRings() {
     }
 }
 
-// Helper to pre-populate PixiJS cache with virtual spritesheet configurations for raw images
+// Helper to pre-populate the virtual spritesheet store for raw images
 async function loadVirtualSpritesheets() {
     const cachedRings = game.settings.get("dynamicringselector", "cachedRings") || [];
-    const DynamicRingData = foundry.canvas.tokens?.DynamicRingData || foundry.canvas.placeables?.tokens?.DynamicRingData;
-    if (!DynamicRingData) return;
 
     for (const ring of cachedRings) {
         if (!ring.isImage) continue;
@@ -129,39 +156,41 @@ async function loadVirtualSpritesheets() {
         const id = ring.path.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
         const spritesheetPath = `dynamicringselector://${id}.json`;
 
-        // Check if already in Assets cache to avoid redundant reloading
-        if (PIXI.Assets.cache.has(spritesheetPath)) continue;
+        // Skip if already built
+        if (virtualSpritesheetStore.has(spritesheetPath)) continue;
 
         try {
-            // Load the image texture first via standard Asset loading (handles absolute URLs)
+            // Load the image texture first via standard PixiJS asset loading
             let imagePath = ring.path;
             if (!imagePath.startsWith("/") && !imagePath.startsWith("http")) {
                 imagePath = "/" + imagePath;
             }
             const texture = await PIXI.Assets.load(imagePath);
-            
+            const w = texture.width || 512;
+            const h = texture.height || 512;
+
             // Build the spritesheet config matching the texture dimensions
             const spritesheetJson = {
                 frames: {
                     background: {
-                        frame: { x: 0, y: 0, w: texture.width || 512, h: texture.height || 512 },
+                        frame: { x: 0, y: 0, w, h },
                         rotated: false,
                         trimmed: false,
-                        spriteSourceSize: { x: 0, y: 0, w: texture.width || 512, h: texture.height || 512 },
-                        sourceSize: { w: texture.width || 512, h: texture.height || 512 }
+                        spriteSourceSize: { x: 0, y: 0, w, h },
+                        sourceSize: { w, h }
                     },
                     ring: {
-                        frame: { x: 0, y: 0, w: texture.width || 512, h: texture.height || 512 },
+                        frame: { x: 0, y: 0, w, h },
                         rotated: false,
                         trimmed: false,
-                        spriteSourceSize: { x: 0, y: 0, w: texture.width || 512, h: texture.height || 512 },
-                        sourceSize: { w: texture.width || 512, h: texture.height || 512 }
+                        spriteSourceSize: { x: 0, y: 0, w, h },
+                        sourceSize: { w, h }
                     }
                 },
                 meta: {
                     image: imagePath,
                     format: "RGBA8888",
-                    size: { w: texture.width || 512, h: texture.height || 512 },
+                    size: { w, h },
                     scale: "1"
                 },
                 config: {
@@ -175,8 +204,8 @@ async function loadVirtualSpritesheets() {
             const spritesheet = new PIXI.Spritesheet(texture, spritesheetJson);
             await spritesheet.parse();
 
-            // Set the parsed spritesheet manually into the PixiJS Assets Cache
-            PIXI.Assets.cache.set(spritesheetPath, spritesheet);
+            // Store in the module-level map; the custom LoaderParser will serve this
+            virtualSpritesheetStore.set(spritesheetPath, spritesheet);
             console.log(`DynamicRingSelector | Cached virtual spritesheet: ${spritesheetPath} for image ${ring.path}`);
         } catch (e) {
             console.error(`DynamicRingSelector | Failed to cache virtual spritesheet for: ${ring.path}`, e);
