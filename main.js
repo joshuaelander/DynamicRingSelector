@@ -117,6 +117,73 @@ function redrawTokenRings() {
     }
 }
 
+// Helper to pre-populate PixiJS cache with virtual spritesheet configurations for raw images
+async function loadVirtualSpritesheets() {
+    const cachedRings = game.settings.get("dynamicringselector", "cachedRings") || [];
+    const DynamicRingData = foundry.canvas.tokens?.DynamicRingData || foundry.canvas.placeables?.tokens?.DynamicRingData;
+    if (!DynamicRingData) return;
+
+    for (const ring of cachedRings) {
+        if (!ring.isImage) continue;
+
+        const id = ring.path.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+        const spritesheetPath = `dynamicringselector://${id}.json`;
+
+        // Check if already in Assets cache to avoid redundant reloading
+        if (PIXI.Assets.cache.has(spritesheetPath)) continue;
+
+        try {
+            // Load the image texture first via standard Asset loading (handles absolute URLs)
+            let imagePath = ring.path;
+            if (!imagePath.startsWith("/") && !imagePath.startsWith("http")) {
+                imagePath = "/" + imagePath;
+            }
+            const texture = await PIXI.Assets.load(imagePath);
+            
+            // Build the spritesheet config matching the texture dimensions
+            const spritesheetJson = {
+                frames: {
+                    background: {
+                        frame: { x: 0, y: 0, w: texture.width || 512, h: texture.height || 512 },
+                        rotated: false,
+                        trimmed: false,
+                        spriteSourceSize: { x: 0, y: 0, w: texture.width || 512, h: texture.height || 512 },
+                        sourceSize: { w: texture.width || 512, h: texture.height || 512 }
+                    },
+                    ring: {
+                        frame: { x: 0, y: 0, w: texture.width || 512, h: texture.height || 512 },
+                        rotated: false,
+                        trimmed: false,
+                        spriteSourceSize: { x: 0, y: 0, w: texture.width || 512, h: texture.height || 512 },
+                        sourceSize: { w: texture.width || 512, h: texture.height || 512 }
+                    }
+                },
+                meta: {
+                    image: imagePath,
+                    format: "RGBA8888",
+                    size: { w: texture.width || 512, h: texture.height || 512 },
+                    scale: "1"
+                },
+                config: {
+                    defaultColorBand: {
+                        startRadius: 0.8,
+                        endRadius: 1.0
+                    }
+                }
+            };
+
+            const spritesheet = new PIXI.Spritesheet(texture, spritesheetJson);
+            await spritesheet.parse();
+
+            // Set the parsed spritesheet manually into the PixiJS Assets Cache
+            PIXI.Assets.cache.set(spritesheetPath, spritesheet);
+            console.log(`DynamicRingSelector | Cached virtual spritesheet: ${spritesheetPath} for image ${ring.path}`);
+        } catch (e) {
+            console.error(`DynamicRingSelector | Failed to cache virtual spritesheet for: ${ring.path}`, e);
+        }
+    }
+}
+
 // Native Dynamic Ring Registration Hook
 Hooks.on("initializeDynamicTokenRingConfig", (ringConfig) => {
     const cachedRings = game.settings.get("dynamicringselector", "cachedRings") || [];
@@ -135,43 +202,7 @@ Hooks.on("initializeDynamicTokenRingConfig", (ringConfig) => {
 
         let spritesheetPath = ring.path;
         if (ring.isImage) {
-            let imagePath = ring.path;
-            if (!imagePath.startsWith("/") && !imagePath.startsWith("http")) {
-                imagePath = "/" + imagePath;
-            }
-            const spritesheetJson = {
-                frames: {
-                    background: {
-                        frame: { x: 0, y: 0, w: 512, h: 512 },
-                        rotated: false,
-                        trimmed: false,
-                        spriteSourceSize: { x: 0, y: 0, w: 512, h: 512 },
-                        sourceSize: { w: 512, h: 512 }
-                    },
-                    ring: {
-                        frame: { x: 0, y: 0, w: 512, h: 512 },
-                        rotated: false,
-                        trimmed: false,
-                        spriteSourceSize: { x: 0, y: 0, w: 512, h: 512 },
-                        sourceSize: { w: 512, h: 512 }
-                    }
-                },
-                meta: {
-                    image: imagePath,
-                    format: "RGBA8888",
-                    size: { w: 512, h: 512 },
-                    scale: "1"
-                },
-                config: {
-                    defaultColorBand: {
-                        startRadius: 0.8,
-                        endRadius: 1.0
-                    }
-                }
-            };
-            const jsonStr = JSON.stringify(spritesheetJson);
-            const base64Str = btoa(unescape(encodeURIComponent(jsonStr)));
-            spritesheetPath = `data:application/json;base64,${base64Str}`;
+            spritesheetPath = `dynamicringselector://${id}.json`;
         }
 
         const customRing = new DynamicRingData({
@@ -185,7 +216,7 @@ Hooks.on("initializeDynamicTokenRingConfig", (ringConfig) => {
             spritesheet: spritesheetPath
         });
         ringConfig.addConfig(id, customRing);
-        console.log(`DynamicRingSelector | Registered native ring configuration: ${id} (${ring.path})`);
+        console.log(`DynamicRingSelector | Registered native ring configuration: ${id} (${spritesheetPath})`);
     }
 });
 
@@ -238,7 +269,10 @@ Hooks.once("init", () => {
 });
 
 // Ready Hook
-Hooks.once("ready", () => {
+Hooks.once("ready", async () => {
+    // Players and GMs need to load and cache virtual spritesheets for dynamic token rings
+    await loadVirtualSpritesheets();
+
     if (game.user.isGM) {
         updateCachedRings().catch(err => {
             console.error("DynamicRingSelector | Error updating cached rings during ready:", err);
