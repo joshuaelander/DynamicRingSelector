@@ -51,36 +51,58 @@ async function buildCompositeCustomSpritesheet(customConfig) {
     const ringWidth = ringTexture.width || 512;
     const ringHeight = ringTexture.height || 512;
 
+    const padding = 32;
+    const frameWidth = Math.max(backgroundWidth, ringWidth) + (padding * 2);
+    const frameHeight = Math.max(backgroundHeight, ringHeight) + (padding * 2);
     const canvas = document.createElement("canvas");
-    canvas.width = backgroundWidth + ringWidth;
-    canvas.height = Math.max(backgroundHeight, ringHeight);
+    canvas.width = (frameWidth * 2) + padding;
+    canvas.height = frameHeight;
 
     const ctx = canvas.getContext("2d");
     if (!ctx) {
         throw new Error("Unable to create a canvas context for the custom ring spritesheet.");
     }
 
+    const drawScaledImage = (source, targetX, targetY, targetWidth, targetHeight) => {
+        const sourceWidth = source.naturalWidth || source.width || targetWidth;
+        const sourceHeight = source.naturalHeight || source.height || targetHeight;
+        const sourceAspect = sourceWidth / sourceHeight;
+        const targetAspect = targetWidth / targetHeight;
+        let drawWidth = targetWidth;
+        let drawHeight = targetHeight;
+
+        if (sourceAspect > targetAspect) {
+            drawHeight = targetWidth / sourceAspect;
+        } else {
+            drawWidth = targetHeight * sourceAspect;
+        }
+
+        const offsetX = targetX + ((targetWidth - drawWidth) / 2);
+        const offsetY = targetY + ((targetHeight - drawHeight) / 2);
+        ctx.drawImage(source, offsetX, offsetY, drawWidth, drawHeight);
+    };
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(ringTexture.baseTexture.resource?.source, 0, 0, ringWidth, ringHeight);
-    ctx.drawImage(backgroundTexture.baseTexture.resource?.source, ringWidth, 0, backgroundWidth, backgroundHeight);
+    drawScaledImage(backgroundTexture.baseTexture.resource?.source, padding, padding, frameWidth - (padding * 2), frameHeight - (padding * 2));
+    drawScaledImage(ringTexture.baseTexture.resource?.source, frameWidth + padding + padding, padding, frameWidth - (padding * 2), frameHeight - (padding * 2));
 
     const compositeTexture = PIXI.Texture.from(canvas);
     const spritesheetJson = {
         frames: {
             background: {
-                frame: { x: 0, y: 0, w: ringWidth, h: ringHeight },
+                frame: { x: 0, y: 0, w: frameWidth, h: frameHeight },
                 rotated: false,
                 trimmed: false,
-                spriteSourceSize: { x: 0, y: 0, w: ringWidth, h: ringHeight },
-                sourceSize: { w: ringWidth, h: ringHeight },
+                spriteSourceSize: { x: 0, y: 0, w: frameWidth, h: frameHeight },
+                sourceSize: { w: frameWidth, h: frameHeight },
                 anchor: { x: 0.5, y: 0.5 }
             },
             ring: {
-                frame: { x: ringWidth, y: 0, w: backgroundWidth, h: backgroundHeight },
+                frame: { x: frameWidth + padding, y: 0, w: frameWidth, h: frameHeight },
                 rotated: false,
                 trimmed: false,
-                spriteSourceSize: { x: 0, y: 0, w: backgroundWidth, h: backgroundHeight },
-                sourceSize: { w: backgroundWidth, h: backgroundHeight },
+                spriteSourceSize: { x: 0, y: 0, w: frameWidth, h: frameHeight },
+                sourceSize: { w: frameWidth, h: frameHeight },
                 anchor: { x: 0.5, y: 0.5 }
             }
         },
@@ -231,33 +253,6 @@ async function updateCachedRings() {
         label: "Default Steel Ring"
     });
 
-    const imageExtensions = [".png", ".webp", ".jpg", ".jpeg"];
-
-    // 2. Scan configured directory (GMs only)
-    const dirPath = game.settings.get("dynamicringselector", "ringDirectory");
-    if (dirPath && game.user.isGM) {
-        try {
-            const browseResult = await FilePicker.browse("data", dirPath);
-            for (const file of browseResult.files) {
-                const lowerFile = file.toLowerCase();
-                const isImage = imageExtensions.some(ext => lowerFile.endsWith(ext));
-                const isJson = lowerFile.endsWith(".json");
-                if (isJson || isImage) {
-                    const filename = file.split("/").pop();
-                    const ext = filename.includes(".") ? filename.substring(filename.lastIndexOf(".")) : "";
-                    const baseLabel = filename
-                        .replace(ext, "")
-                        .replace(/[-_]/g, " ")
-                        .replace(/\b\w/g, c => c.toUpperCase());
-                    const label = isImage ? `${baseLabel} (Image)` : baseLabel;
-                    rings.set(file, { path: file, label: label, isImage: isImage });
-                }
-            }
-        } catch (e) {
-            console.warn("DynamicRingSelector | Failed to browse directory: " + dirPath, e);
-        }
-    }
-
     const customConfig = refreshCustomRingConfig();
     if (customConfig) {
         rings.set(customConfig.id, {
@@ -266,37 +261,6 @@ async function updateCachedRings() {
             isImage: true,
             isCustom: true
         });
-    }
-
-    // 3. Scan common paths for Tokenizer and other popular modules
-    const commonPaths = [
-        "modules/tokenizer/assets/rings.json",
-        "modules/tokenizer/assets/rings-steel.json"
-    ];
-    for (const path of commonPaths) {
-        const parts = path.split("/");
-        const moduleId = parts[1];
-        if (game.modules.get(moduleId)?.active) {
-            const filename = parts.pop();
-            const label = `${game.modules.get(moduleId).title} - ${filename.replace(".json", "").replace(/[-_]/g, " ").replace(/\b\w/g, c => c.toUpperCase())}`;
-            rings.set(path, { path: path, label: label });
-        }
-    }
-
-    // 4. Add additional custom paths from setting
-    const additional = game.settings.get("dynamicringselector", "additionalPaths") || "";
-    const paths = additional.split(/[\n,]+/).map(p => p.trim()).filter(p => p.length > 0);
-    for (const path of paths) {
-        const lowerPath = path.toLowerCase();
-        const isImage = imageExtensions.some(ext => lowerPath.endsWith(ext));
-        const filename = path.split("/").pop();
-        const ext = filename.includes(".") ? filename.substring(filename.lastIndexOf(".")) : "";
-        const baseLabel = filename
-            .replace(ext, "")
-            .replace(/[-_]/g, " ")
-            .replace(/\b\w/g, c => c.toUpperCase());
-        const label = isImage ? `${baseLabel} (Image)` : baseLabel;
-        rings.set(path, { path: path, label: label, isImage: isImage });
     }
 
     const ringList = Array.from(rings.values());
@@ -350,7 +314,7 @@ async function loadVirtualSpritesheets() {
     const cachedRings = game.settings.get("dynamicringselector", "cachedRings") || [];
 
     for (const ring of cachedRings) {
-        if (!ring.isImage) continue;
+        if (!ring.isImage || ring.isCustom) continue;
 
         const id = ring.path.replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
         const spritesheetPath = `dynamicringselector://${id}.json`;
@@ -471,29 +435,6 @@ Hooks.on("initializeDynamicTokenRingConfig", (ringConfig) => {
 // Init Hook
 Hooks.once("init", () => {
     // Register settings
-    game.settings.register("dynamicringselector", "ringDirectory", {
-        name: "Dynamic Token Ring Directory",
-        hint: "A folder path in your user data directory to scan for custom dynamic token ring JSON files.",
-        scope: "world",
-        config: false,
-        type: String,
-        default: "canvas/tokens",
-        filePicker: "folder",
-        requiresReload: true,
-        onChange: () => { if (game.user.isGM) updateCachedRings(); }
-    });
-
-    game.settings.register("dynamicringselector", "additionalPaths", {
-        name: "Additional Ring Paths",
-        hint: "Comma or newline separated list of paths to specific ring JSON files (e.g. from other modules or custom locations).",
-        scope: "world",
-        config: false,
-        type: String,
-        default: "",
-        requiresReload: true,
-        onChange: () => { if (game.user.isGM) updateCachedRings(); }
-    });
-
     game.settings.register("dynamicringselector", "customRingImage", {
         name: "Custom Ring Image",
         hint: "Select the ring image to pair with the background image below for a custom dynamic token ring.",
