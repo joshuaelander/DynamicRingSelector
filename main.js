@@ -61,25 +61,27 @@ async function buildCompositeCustomSpritesheet(customConfig) {
     }
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(backgroundTexture.baseTexture.resource?.source, 0, 0, backgroundWidth, backgroundHeight);
-    ctx.drawImage(ringTexture.baseTexture.resource?.source, backgroundWidth, 0, ringWidth, ringHeight);
+    ctx.drawImage(ringTexture.baseTexture.resource?.source, 0, 0, ringWidth, ringHeight);
+    ctx.drawImage(backgroundTexture.baseTexture.resource?.source, ringWidth, 0, backgroundWidth, backgroundHeight);
 
     const compositeTexture = PIXI.Texture.from(canvas);
     const spritesheetJson = {
         frames: {
             background: {
-                frame: { x: 0, y: 0, w: backgroundWidth, h: backgroundHeight },
-                rotated: false,
-                trimmed: false,
-                spriteSourceSize: { x: 0, y: 0, w: backgroundWidth, h: backgroundHeight },
-                sourceSize: { w: backgroundWidth, h: backgroundHeight }
-            },
-            ring: {
-                frame: { x: backgroundWidth, y: 0, w: ringWidth, h: ringHeight },
+                frame: { x: 0, y: 0, w: ringWidth, h: ringHeight },
                 rotated: false,
                 trimmed: false,
                 spriteSourceSize: { x: 0, y: 0, w: ringWidth, h: ringHeight },
-                sourceSize: { w: ringWidth, h: ringHeight }
+                sourceSize: { w: ringWidth, h: ringHeight },
+                anchor: { x: 0.5, y: 0.5 }
+            },
+            ring: {
+                frame: { x: ringWidth, y: 0, w: backgroundWidth, h: backgroundHeight },
+                rotated: false,
+                trimmed: false,
+                spriteSourceSize: { x: 0, y: 0, w: backgroundWidth, h: backgroundHeight },
+                sourceSize: { w: backgroundWidth, h: backgroundHeight },
+                anchor: { x: 0.5, y: 0.5 }
             }
         },
         meta: {
@@ -473,7 +475,7 @@ Hooks.once("init", () => {
         name: "Dynamic Token Ring Directory",
         hint: "A folder path in your user data directory to scan for custom dynamic token ring JSON files.",
         scope: "world",
-        config: true,
+        config: false,
         type: String,
         default: "canvas/tokens",
         filePicker: "folder",
@@ -485,7 +487,7 @@ Hooks.once("init", () => {
         name: "Additional Ring Paths",
         hint: "Comma or newline separated list of paths to specific ring JSON files (e.g. from other modules or custom locations).",
         scope: "world",
-        config: true,
+        config: false,
         type: String,
         default: "",
         requiresReload: true,
